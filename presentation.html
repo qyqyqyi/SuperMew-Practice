@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SuperMew - The Next Generation RAG Engine</title>
+    <title>SuperMew - 新一代 RAG 检索引擎</title>
     <style>
         :root {
             --bg-color: #0a0a0a;
@@ -161,8 +161,8 @@
         <section class="slide">
             <div class="slide-content">
                 <h1>SuperMew</h1>
-                <p style="color: var(--text-primary); font-size: clamp(1.5rem, 3vw, 2.5rem); font-weight: 500;">The Next Generation CRAG Knowledge Engine</p>
-                <p>Enterprise-grade Self-Reflective RAG architecture built for precision.</p>
+                <p style="color: var(--text-primary); font-size: clamp(1.5rem, 3vw, 2.5rem); font-weight: 500;">新一代 CRAG 知识引擎</p>
+                <p>为高精度问答打造的企业级自我反思 RAG 架构。</p>
                 <div class="scroll-indicator">↓</div>
             </div>
         </section>
@@ -170,8 +170,8 @@
         <!-- Slide 2: The Problem -->
         <section class="slide">
             <div class="slide-content">
-                <h2>Traditional RAG is Blind.</h2>
-                <p>Standard vector search fails on specific terms, ignores context boundaries, and forces LLMs to hallucinate when fed garbage data.</p>
+                <h2>传统的 RAG 是盲目的。</h2>
+                <p>标准的向量检索面对专有名词时频繁失效、丢失上下文边界，<br>并因为喂给大模型满是噪音的垃圾数据而导致幻觉。</p>
                 <div style="font-size: 4rem; margin-top: 1rem; opacity: 0.5;">🙈</div>
             </div>
         </section>
@@ -179,9 +179,9 @@
         <!-- Slide 3: The Brain -->
         <section class="slide">
             <div class="slide-content">
-                <h2>Self-Reflective Architecture.</h2>
-                <p>SuperMew doesn't just search. It <strong>evaluates</strong> and <strong>corrects</strong>.</p>
-                <p>If the <strong>Grader LLM</strong> deems a search irrelevant, LangGraph autonomously triggers <strong>HyDE</strong> (Hypothetical Document Embeddings) or <strong>Step-back</strong> transformations to recover the lost context.</p>
+                <h2>自我反思架构。</h2>
+                <p>SuperMew 不仅仅是搜索。它懂得 <strong>评估</strong> 和 <strong>纠错</strong>。</p>
+                <p>如果 <strong>Grader 裁判模型</strong> 认为检索结果无关，LangGraph 状态机将自动触发 <strong>HyDE</strong>（假设性文档）或 <strong>Step-back</strong>（退步提问）变换，以找回丢失的上下文。</p>
                 <div class="code-snippet">
                     graph.add_conditional_edges(<br>
                     &nbsp;&nbsp;&nbsp;&nbsp;"grade_documents",<br>
@@ -198,22 +198,22 @@
         <!-- Slide 4: The Engine -->
         <section class="slide">
             <div class="slide-content">
-                <h2>Hybrid Precision.</h2>
-                <p>Semantic meaning isn't enough. We built a high-concurrency, lock-protected <strong>BM25 Sparse Vector</strong> engine from scratch.</p>
-                <p>Milvus simultaneously executes HNSW (Dense) and Inverted Index (Sparse) searches, fusing them flawlessly with <strong>RRF (Reciprocal Rank Fusion)</strong>.</p>
+                <h2>混合精准检索。</h2>
+                <p>仅靠语义理解是不够的。我们在本地纯手写了一个支持高并发、带锁保护的 <strong>BM25 稀疏向量</strong> 引擎。</p>
+                <p>Milvus 将同时并发执行 HNSW (稠密语义) 和倒排索引 (稀疏词汇) 检索，并使用 <strong>RRF (倒数排名融合)</strong> 算法完美融合这两路差异极大的召回结果。</p>
             </div>
         </section>
 
         <!-- Slide 5: The Memory -->
         <section class="slide">
             <div class="slide-content">
-                <h2>Unbroken Context.</h2>
-                <p>Parent-Child Chunking prevents context fragmentation.</p>
-                <p>Documents are sliced into 3 tiers. Only the micro-sentences (L3) enter Milvus. Once hit, SuperMew seamlessly resurrects the macro-paragraphs (L1/L2) to feed the LLM the complete picture.</p>
+                <h2>完整连贯的上下文。</h2>
+                <p>父子级文档切片 (Parent-Child Chunking) 彻底消灭了上下文破碎。</p>
+                <p>文档被切割成 3 个层级。只有微观的细碎句子（L3）会进入向量库。一旦命中，SuperMew 会顺藤摸瓜唤醒宏观段落（L1/L2）以供大模型全面理解。</p>
                 <div style="display: flex; justify-content: center; gap: 20px; margin-top: 2rem;">
-                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px;">L1 (1200 chars)</div>
-                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.4); border-radius: 8px;">L2 (600 chars)</div>
-                    <div style="padding: 1rem; border: 2px solid var(--accent-green); border-radius: 8px; color: var(--accent-green); font-weight: bold;">L3 (300 chars) 🎯</div>
+                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px;">L1 (1200 字符)</div>
+                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.4); border-radius: 8px;">L2 (600 字符)</div>
+                    <div style="padding: 1rem; border: 2px solid var(--accent-green); border-radius: 8px; color: var(--accent-green); font-weight: bold;">L3 (300 字符) 🎯</div>
                 </div>
             </div>
         </section>
@@ -221,11 +221,11 @@
         <!-- Slide 6: Conclusion -->
         <section class="slide">
             <div class="slide-content">
-                <h2>Built for Production.</h2>
-                <p>Experience the internal mechanics with our real-time visualization dashboard.</p>
+                <h2>为生产环境而生。</h2>
+                <p>通过我们的实时可视化数据大屏，深入体验系统的内部机械运转。</p>
                 <div style="display: flex; gap: 15px; justify-content: center;">
-                    <a href="project_visualization.html" class="btn">View Architecture</a>
-                    <a href="frontend/index.html" class="btn btn-outline">Start Chatting</a>
+                    <a href="project_visualization.html" class="btn">查看架构与源码</a>
+                    <a href="frontend/index.html" class="btn btn-outline">开始聊天</a>
                 </div>
             </div>
         </section>
