@@ -38,48 +38,12 @@ uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 3) 创建 `.env` 文件
-在项目根目录新建 `.env`，可直接使用下面模板：
 
-```env
-# ===== Model =====
-ARK_API_KEY=your_ark_api_key
-MODEL=your_model_name
-BASE_URL=https://your-llm-endpoint/v1
-
-# ===== 本地稠密向量（langchain_huggingface，默认 BAAI/bge-m3）=====
-EMBEDDING_MODEL=BAAI/bge-m3
-EMBEDDING_DEVICE=cpu
-DENSE_EMBEDDING_DIM=1024
-
-# ===== Rerank (可选，不配则自动降级) =====
-RERANK_MODEL=your_rerank_model
-RERANK_BINDING_HOST=https://your-rerank-host
-RERANK_API_KEY=your_rerank_api_key
-
-# ===== Milvus =====
-MILVUS_HOST=127.0.0.1
-MILVUS_PORT=19530
-MILVUS_COLLECTION=embeddings_collection
-
-# ===== Database / Cache =====
-DATABASE_URL=postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/langchain_app
-REDIS_URL=redis://127.0.0.1:6379/0
-
-# ===== Auth =====
-JWT_SECRET_KEY=replace-with-strong-random-secret
-ADMIN_INVITE_CODE=supermew-admin-2026
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=1440
-PASSWORD_PBKDF2_ROUNDS=310000
-
-# ===== BM25 稀疏统计持久化（默认 data/bm25_state.json，可改路径）=====
-# BM25_STATE_PATH=/path/to/bm25_state.json
-
-# ===== Tools （可选）=====
-AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
-AMAP_API_KEY=your_amap_api_key
-
+```bash
+cp .env.example .env
 ```
+
+按需编辑 `.env` 中的 API Key、模型名与连接地址；变量说明见 `.env.example` 内注释。
 
 ### 4) Docker 部署（数据库 + 缓存 + 向量库）
 当前仓库的 `docker-compose.yml` 同时承载业务依赖与 Milvus 依赖：
@@ -210,21 +174,31 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - 登录校验兼容历史 bcrypt 哈希，支持平滑迁移。
 
 ## 目录与架构
-- 后端：`backend/`
+- 后端：`backend/`（分层包结构，统一 `from backend.xxx import`）
   - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
-  - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
-  - [auth.py](backend/auth.py)：注册登录、JWT 鉴权、权限检查、密码哈希与校验。
-  - [database.py](backend/database.py)：数据库引擎与会话工厂、建表入口。
-  - [models.py](backend/models.py)：ORM 模型定义（用户、会话、消息、父文档）。
-  - [cache.py](backend/cache.py)：Redis JSON 缓存封装。
-  - [agent.py](backend/agent.py)：LangChain Agent、会话存储、摘要逻辑。
-  - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
-  - [embedding.py](backend/embedding.py)：本地 HuggingFace 稠密向量（默认 `BAAI/bge-m3`）+ BM25 稀疏向量；BM25 状态持久化与增量更新。
-  - [document_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
-  - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块仓储（PostgreSQL + Redis，用于 Auto-merging 回取父块）。
-  - [milvus_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
-  - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索；`query_all` 分页查询（单次 `query` 的 `limit` 受服务端上限约束，删除前拉全量 chunk 文本时使用）。
-  - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
+  - `api/`：HTTP 层
+    - [router.py](backend/api/router.py)：路由聚合。
+    - `routes/`：`auth`、`sessions`、`chat`、`documents` 分文件。
+    - [resources.py](backend/api/resources.py)：Milvus / 上传目录等共享资源。
+  - `chat/`：对话域
+    - [service.py](backend/chat/service.py)：非流式 / 流式聊天入口。
+    - [runtime.py](backend/chat/runtime.py)：LangChain Agent 实例。
+    - [storage.py](backend/chat/storage.py)：会话 PostgreSQL + Redis。
+    - [streaming.py](backend/chat/streaming.py)：RAG 步骤 SSE 推送（非 Agent 工具，供 pipeline 跨线程上报进度）。
+    - [rag_context.py](backend/chat/rag_context.py)：单轮 RAG trace 暂存（工具 → 会话持久化）。
+  - `rag/`：检索增强
+    - [pipeline.py](backend/rag/pipeline.py)：LangGraph RAG 工作流。
+    - [utils.py](backend/rag/utils.py)：混合检索、Rerank、Auto-merging。
+  - `indexing/`：文档入库与向量
+    - [embedding.py](backend/indexing/embedding.py)：稠密 + BM25 稀疏向量。
+    - [document_loader.py](backend/indexing/document_loader.py)：PDF/Word/Excel 分块。
+    - [milvus_client.py](backend/indexing/milvus_client.py)、[milvus_writer.py](backend/indexing/milvus_writer.py)。
+    - [parent_chunk_store.py](backend/indexing/parent_chunk_store.py)：父级分块 DocStore。
+  - `tools/`：LangChain Agent 可调用的 `@tool`（天气、知识库检索）。
+  - `infra/`：[database.py](backend/infra/database.py)、[cache.py](backend/infra/cache.py)、[auth.py](backend/infra/auth.py)。
+  - `db/`：[models.py](backend/db/models.py)：ORM 模型。
+  - `schemas/`：Pydantic 请求/响应（auth / chat / documents）。
+  - `jobs/`：[upload_jobs.py](backend/jobs/upload_jobs.py)：异步上传/删除任务进度。
 - 前端：`frontend/`
   - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
 - 数据：`data/`
@@ -236,7 +210,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 1) 项目全链路（端到端）
 1. 用户在前端输入问题，调用 `POST /chat/stream`（流式）。
-2. FastAPI `api.py` 返回 `StreamingResponse(media_type="text/event-stream")`。
+2. FastAPI `api/routes/chat.py` 返回 `StreamingResponse(media_type="text/event-stream")`。
 3. LangChain Agent 根据问题类型决定是否调用工具：
   - 天气问题 → `get_current_weather`
   - 知识问答 → `search_knowledge_base`

@@ -1,11 +1,18 @@
+import os
+import sys
+from pathlib import Path
+
+# 支持 `python backend/app.py` 与 `uvicorn backend.app:app` 两种启动方式
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-import os
 
-import api as api_module
-from database import init_db
+from backend.api import router
+from backend.infra.database import init_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -26,7 +33,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # No-cache middleware for development
     @app.middleware("http")
     async def _no_cache(request, call_next):
         response = await call_next(request)
@@ -37,9 +43,8 @@ def create_app() -> FastAPI:
             response.headers["Expires"] = "0"
         return response
 
-    app.include_router(api_module.router)
+    app.include_router(router)
 
-    # serve frontend static files at root
     if FRONTEND_DIR.exists():
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
 

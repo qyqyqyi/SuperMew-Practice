@@ -2,9 +2,9 @@
 from datetime import datetime
 from typing import List
 
-from cache import cache
-from database import SessionLocal
-from models import ParentChunk
+from backend.infra.cache import cache
+from backend.infra.database import SessionLocal
+from backend.db.models import ParentChunk
 
 
 class ParentChunkStore:

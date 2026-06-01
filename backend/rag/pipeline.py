@@ -5,7 +5,7 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from rag_utils import (
+from backend.rag.utils import (
     retrieve_documents,
     step_back_expand,
     generate_hypothetical_document,
@@ -13,7 +13,7 @@ from rag_utils import (
     retrieval_trace_fields,
     merge_retrieval_trace,
 )
-from tools import emit_rag_step
+from backend.chat.streaming import emit_rag_step
 
 load_dotenv()
 

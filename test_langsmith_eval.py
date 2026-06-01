@@ -7,12 +7,12 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from langsmith import evaluate
 
-# 将 backend 路径添加到 sys.path，以便导入你的 Agent 模块
-backend_path = os.path.join(os.path.dirname(__file__), "backend")
-if backend_path not in sys.path:
-    sys.path.append(backend_path)
+# 项目根目录加入 sys.path，以便使用 backend 包导入
+project_root = os.path.dirname(__file__)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-chat_with_agent = importlib.import_module("agent").chat_with_agent
+chat_with_agent = importlib.import_module("backend.chat.service").chat_with_agent
 
 load_dotenv()
 
