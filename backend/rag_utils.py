@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 import os
 import json
 import requests
@@ -21,6 +21,39 @@ RERANK_API_KEY = os.getenv("RERANK_API_KEY")
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
+def _read_positive_int_env(name: str, default: int) -> int:
+    try:
+        return max(int(os.getenv(name, str(default))), 1)
+    except ValueError:
+        return default
+
+
+RETRIEVAL_CANDIDATE_MULTIPLIER = _read_positive_int_env("RETRIEVAL_CANDIDATE_MULTIPLIER", 3)
+_RETRIEVAL_CANDIDATE_K_RAW = os.getenv("RETRIEVAL_CANDIDATE_K", "").strip()
+
+RETRIEVAL_TRACE_FIELDS = (
+    "retrieval_pipeline",
+    "retrieval_mode",
+    "candidate_k",
+    "candidate_k_source",
+    "candidate_k_config_error",
+    "retrieval_candidate_multiplier",
+    "retrieval_top_k",
+    "leaf_retrieve_level",
+    "recall_count",
+    "post_merge_candidate_count",
+    "candidate_count",
+    "auto_merge_enabled",
+    "auto_merge_applied",
+    "auto_merge_threshold",
+    "auto_merge_replaced_chunks",
+    "auto_merge_steps",
+    "rerank_enabled",
+    "rerank_applied",
+    "rerank_model",
+    "rerank_endpoint",
+    "rerank_error",
+)
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
@@ -29,11 +62,91 @@ _parent_chunk_store = ParentChunkStore()
 _stepback_model = None
 
 
+def resolve_candidate_k(top_k: int) -> Tuple[int, Dict[str, Any]]:
+    """解析 Milvus 候选池大小；RETRIEVAL_CANDIDATE_K 优先，否则 top_k × multiplier。"""
+    if _RETRIEVAL_CANDIDATE_K_RAW:
+        try:
+            candidate_k = max(int(_RETRIEVAL_CANDIDATE_K_RAW), top_k)
+        except ValueError:
+            candidate_k = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
+            return candidate_k, {
+                "candidate_k_source": "multiplier",
+                "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
+                "candidate_k_config_error": "invalid RETRIEVAL_CANDIDATE_K",
+            }
+        return candidate_k, {
+            "candidate_k_source": "env",
+            "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
+        }
+    candidate_k = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
+    return candidate_k, {
+        "candidate_k_source": "multiplier",
+        "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
+    }
+
+
+def retrieval_trace_fields(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """从 retrieve meta 提取应写入 rag_trace 的检索字段。"""
+    return {key: meta[key] for key in RETRIEVAL_TRACE_FIELDS if key in meta and meta[key] is not None}
+
+
+def merge_retrieval_trace(accumulated: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    """合并多路检索 trace（扩展召回）；计数类字段累加，配置类字段保留首次。"""
+    incoming = retrieval_trace_fields(meta)
+    if not accumulated:
+        return incoming
+    additive = {
+        "recall_count",
+        "post_merge_candidate_count",
+        "auto_merge_replaced_chunks",
+        "auto_merge_steps",
+    }
+    merged = dict(accumulated)
+    for key, value in incoming.items():
+        if key in additive:
+            merged[key] = int(merged.get(key) or 0) + int(value or 0)
+        elif key == "auto_merge_applied":
+            merged[key] = bool(merged.get(key)) or bool(value)
+        else:
+            merged.setdefault(key, value)
+    return merged
+
+
 def _get_rerank_endpoint() -> str:
     if not RERANK_BINDING_HOST:
         return ""
     host = RERANK_BINDING_HOST.strip().rstrip("/")
     return host if host.endswith("/v1/rerank") else f"{host}/v1/rerank"
+
+
+def _effective_score(doc: dict) -> Optional[float]:
+    """精排分优先，否则用召回分；用于合并聚合与合并后重排。"""
+    rerank_score = doc.get("rerank_score")
+    if rerank_score is not None:
+        return float(rerank_score)
+    score = doc.get("score")
+    if score is not None:
+        return float(score)
+    return None
+
+
+def _merge_rank_score_into(target: dict, source: dict) -> None:
+    incoming = _effective_score(source)
+    if incoming is None:
+        return
+    uses_rerank = source.get("rerank_score") is not None or target.get("rerank_score") is not None
+    if uses_rerank:
+        existing = target.get("rerank_score")
+        if existing is None:
+            target["rerank_score"] = incoming
+        else:
+            target["rerank_score"] = max(float(existing), incoming)
+        return
+    existing = target.get("score")
+    if existing is None:
+        target["score"] = incoming
+    else:
+        target["score"] = max(float(existing), incoming)
 
 
 def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
@@ -59,21 +172,14 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
             merged_docs.append(doc)
             continue
 
-        score = doc.get("score")
         if parent_id in parent_slot:
             existing = merged_docs[parent_slot[parent_id]]
-            if score is not None:
-                existing_score = existing.get("score")
-                if existing_score is None:
-                    existing["score"] = float(score)
-                else:
-                    existing["score"] = max(float(existing_score), float(score))
+            _merge_rank_score_into(existing, doc)
             merged_count += 1
             continue
 
         parent_doc = dict(parent_map[parent_id])
-        if score is not None:
-            parent_doc["score"] = max(float(parent_doc.get("score", score)), float(score))
+        _merge_rank_score_into(parent_doc, doc)
         parent_doc["merged_from_children"] = True
         parent_doc["merged_child_count"] = len(groups[parent_id])
         parent_slot[parent_id] = len(merged_docs)
@@ -83,31 +189,54 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
     return merged_docs, merged_count
 
 
-def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
-    if not AUTO_MERGE_ENABLED or not docs:
-        return docs[:top_k], {
-            "auto_merge_enabled": AUTO_MERGE_ENABLED,
-            "auto_merge_applied": False,
-            "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-            "auto_merge_replaced_chunks": 0,
-            "auto_merge_steps": 0,
-        }
+def _empty_merge_meta() -> Dict[str, Any]:
+    return {
+        "auto_merge_enabled": AUTO_MERGE_ENABLED,
+        "auto_merge_applied": False,
+        "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+        "auto_merge_replaced_chunks": 0,
+        "auto_merge_steps": 0,
+        "post_merge_candidate_count": 0,
+    }
 
-    # 两段自动合并：L3->L2，再 L2->L1。
+
+def _auto_merge_candidates(docs: List[dict]) -> Tuple[List[dict], Dict[str, Any]]:
+    """在完整召回候选上执行 L3→L2→L1 合并；不改变顺序，精排由后续步骤负责。"""
+    meta = _empty_merge_meta()
+    meta["post_merge_candidate_count"] = len(docs)
+    if not AUTO_MERGE_ENABLED or not docs:
+        return docs, meta
+
     merged_docs, merged_count_l3_l2 = _merge_to_parent_level(docs, threshold=AUTO_MERGE_THRESHOLD)
     merged_docs, merged_count_l2_l1 = _merge_to_parent_level(merged_docs, threshold=AUTO_MERGE_THRESHOLD)
 
-    merged_docs.sort(key=lambda item: item.get("score", 0.0), reverse=True)
-    merged_docs = merged_docs[:top_k]
-
     replaced_count = merged_count_l3_l2 + merged_count_l2_l1
-    return merged_docs, {
-        "auto_merge_enabled": AUTO_MERGE_ENABLED,
+    meta.update({
         "auto_merge_applied": replaced_count > 0,
-        "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
         "auto_merge_replaced_chunks": replaced_count,
         "auto_merge_steps": int(merged_count_l3_l2 > 0) + int(merged_count_l2_l1 > 0),
-    }
+        "post_merge_candidate_count": len(merged_docs),
+    })
+    return merged_docs, meta
+
+
+def _sort_by_rank_score(docs: List[dict]) -> List[dict]:
+    return sorted(docs, key=lambda item: _effective_score(item) or 0.0, reverse=True)
+
+
+def dedupe_documents(docs: List[dict]) -> List[dict]:
+    """按 chunk_id 去重；重复项保留更高 rank 分（rerank_score 优先）。"""
+    by_key: Dict[str, dict] = {}
+    order: List[str] = []
+    for item in docs:
+        chunk_id = (item.get("chunk_id") or "").strip()
+        key = chunk_id or f"{item.get('filename')}|{item.get('page_number')}|{item.get('text')}"
+        if key not in by_key:
+            by_key[key] = item
+            order.append(key)
+            continue
+        _merge_rank_score_into(by_key[key], item)
+    return [by_key[key] for key in order]
 
 
 def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
@@ -121,7 +250,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
         "candidate_count": len(docs_with_rank),
     }
     if not docs_with_rank or not meta["rerank_enabled"]:
-        return docs_with_rank[:top_k], meta
+        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
 
     payload = {
         "model": RERANK_MODEL,
@@ -145,7 +274,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
         )
         if response.status_code >= 400:
             meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
-            return docs_with_rank[:top_k], meta
+            return _sort_by_rank_score(docs_with_rank)[:top_k], meta
 
         items = response.json().get("results", [])
         reranked = []
@@ -162,10 +291,10 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
             return reranked[:top_k], meta
 
         meta["rerank_error"] = "empty_rerank_results"
-        return docs_with_rank[:top_k], meta
+        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
     except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
         meta["rerank_error"] = str(e)
-        return docs_with_rank[:top_k], meta
+        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
 
 
 def _get_stepback_model():
@@ -247,8 +376,33 @@ def step_back_expand(query: str) -> dict:
     }
 
 
+def _finalize_retrieval(
+    query: str,
+    retrieved: List[dict],
+    top_k: int,
+    retrieval_mode: str,
+    candidate_k: int,
+    candidate_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """生产流水线：召回候选 → Auto-merge → Rerank 截断 top_k。"""
+    candidates, merge_meta = _auto_merge_candidates(retrieved)
+    final_docs, rerank_meta = _rerank_documents(query=query, docs=candidates, top_k=top_k)
+    meta = {
+        **rerank_meta,
+        **merge_meta,
+        **candidate_config,
+        "retrieval_mode": retrieval_mode,
+        "retrieval_pipeline": "recall_merge_rerank",
+        "candidate_k": candidate_k,
+        "retrieval_top_k": top_k,
+        "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+        "recall_count": len(retrieved),
+    }
+    return {"docs": final_docs, "meta": meta}
+
+
 def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
-    candidate_k = max(top_k * 3, top_k)
+    candidate_k, candidate_config = resolve_candidate_k(top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
         dense_embeddings = _embedding_service.get_embeddings([query])
@@ -261,13 +415,14 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
             top_k=candidate_k,
             filter_expr=filter_expr,
         )
-        reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
-        rerank_meta["retrieval_mode"] = "hybrid"
-        rerank_meta["candidate_k"] = candidate_k
-        rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-        rerank_meta.update(merge_meta)
-        return {"docs": merged_docs, "meta": rerank_meta}
+        return _finalize_retrieval(
+            query=query,
+            retrieved=retrieved,
+            top_k=top_k,
+            retrieval_mode="hybrid",
+            candidate_k=candidate_k,
+            candidate_config=candidate_config,
+        )
     except Exception:
         try:
             dense_embeddings = _embedding_service.get_embeddings([query])
@@ -277,13 +432,14 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 top_k=candidate_k,
                 filter_expr=filter_expr,
             )
-            reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-            merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
-            rerank_meta["retrieval_mode"] = "dense_fallback"
-            rerank_meta["candidate_k"] = candidate_k
-            rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-            rerank_meta.update(merge_meta)
-            return {"docs": merged_docs, "meta": rerank_meta}
+            return _finalize_retrieval(
+                query=query,
+                retrieved=retrieved,
+                top_k=top_k,
+                retrieval_mode="dense_fallback",
+                candidate_k=candidate_k,
+                candidate_config=candidate_config,
+            )
         except Exception:
             return {
                 "docs": [],
@@ -294,13 +450,13 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                     "rerank_endpoint": _get_rerank_endpoint(),
                     "rerank_error": "retrieve_failed",
                     "retrieval_mode": "failed",
+                    "retrieval_pipeline": "recall_merge_rerank",
                     "candidate_k": candidate_k,
+                    **candidate_config,
+                    "retrieval_top_k": top_k,
                     "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                    "auto_merge_enabled": AUTO_MERGE_ENABLED,
-                    "auto_merge_applied": False,
-                    "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-                    "auto_merge_replaced_chunks": 0,
-                    "auto_merge_steps": 0,
+                    "recall_count": 0,
+                    **_empty_merge_meta(),
                     "candidate_count": 0,
                 },
             }

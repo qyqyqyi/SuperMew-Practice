@@ -248,9 +248,9 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ### 2) RAG 全链路（重点）
 1. **初次召回**：`retrieve_initial`
   - 调用 `retrieve_documents`。
-  - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF）。
-  - 取更大候选集后走 Jina Rerank 精排。
-  - 对召回叶子块执行 Auto-merging（L3->L2->L1），父块从 DocStore 读取。
+  - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF），候选池大小由 `RETRIEVAL_CANDIDATE_K` 或 `RETRIEVAL_CANDIDATE_MULTIPLIER` 决定。
+  - 在完整候选上对叶子块执行 Auto-merging（L3→L2→L1），父块从 DocStore 读取。
+  - 对合并后的片段走 Jina Rerank 精排并截断 `top_k`（流水线：`recall_merge_rerank`）。
 2. **相关性打分门控**：`grade_documents`
   - 使用结构化输出打分 `yes/no`。
   - `yes` 直接进入生成回答；`no` 进入重写阶段。
@@ -259,7 +259,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
   - 生成 `rewrite_query`、`step_back_question`、`hypothetical_doc` 等中间结果。
 4. **二次召回**：`retrieve_expanded`
   - 对重写后的查询（或 HyDE 文档）再次检索。
-  - 同样执行 L3 召回 + Auto-merging，结果去重后返回上下文。
+  - 同样执行 L3 召回 → Auto-merging → Rerank；多路结果按 `chunk_id` 去重（保留更高分）后返回上下文。
 5. **答案生成**：Agent 结合上下文生成最终回答。
 6. **可观测追踪**：返回 `rag_trace`，包括
   - 评分结果与路由决策
@@ -304,6 +304,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`
 - 密码参数：`PASSWORD_PBKDF2_ROUNDS`
+- 检索候选池：`RETRIEVAL_CANDIDATE_K`（固定候选数，优先）、`RETRIEVAL_CANDIDATE_MULTIPLIER`（未设 K 时 `max(top_k × 倍数, top_k)`，默认 `3`）
 - Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
 

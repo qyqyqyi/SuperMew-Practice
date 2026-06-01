@@ -82,6 +82,33 @@ createApp({
             return div.innerHTML;
         },
 
+        formatCandidateKLabel(trace) {
+            if (!trace || trace.candidate_k == null) {
+                return '';
+            }
+            const k = trace.candidate_k;
+            if (trace.candidate_k_config_error) {
+                return `Milvus 候选池：${k}（${trace.candidate_k_config_error}，已回退倍数计算）`;
+            }
+            if (trace.candidate_k_source === 'env') {
+                return `Milvus 候选池：${k}（环境变量 RETRIEVAL_CANDIDATE_K）`;
+            }
+            const multiplier = trace.retrieval_candidate_multiplier;
+            if (multiplier != null) {
+                return `Milvus 候选池：${k}（top_k × ${multiplier}）`;
+            }
+            return `Milvus 候选池：${k}`;
+        },
+
+        hasRetrievalFunnel(trace) {
+            if (!trace) {
+                return false;
+            }
+            return trace.recall_count != null
+                || trace.post_merge_candidate_count != null
+                || trace.candidate_count != null;
+        },
+
         authHeaders(extra = {}) {
             const headers = { ...extra };
             if (this.token) {

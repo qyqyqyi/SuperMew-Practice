@@ -310,11 +310,21 @@
                                 <div v-if="msg.ragTrace.rewrite_query" class="trace-line">
                                     重写查询：{{ msg.ragTrace.rewrite_query }}
                                 </div>
+                                <div v-if="msg.ragTrace.retrieval_pipeline" class="trace-line">
+                                    检索流水线：{{ msg.ragTrace.retrieval_pipeline }}
+                                </div>
                                 <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
                                     检索模式：{{ msg.ragTrace.retrieval_mode }}
                                 </div>
-                                <div v-if="msg.ragTrace.candidate_k" class="trace-line">
-                                    候选召回数：{{ msg.ragTrace.candidate_k }}
+                                <div v-if="msg.ragTrace.candidate_k != null" class="trace-line">
+                                    {{ formatCandidateKLabel(msg.ragTrace) }}
+                                </div>
+                                <div v-if="hasRetrievalFunnel(msg.ragTrace)" class="trace-line trace-funnel">
+                                    检索漏斗：Milvus 召回 {{ msg.ragTrace.recall_count ?? '—' }}
+                                    → 合并后 {{ msg.ragTrace.post_merge_candidate_count ?? '—' }}
+                                    → 精排输入 {{ msg.ragTrace.candidate_count ?? '—' }}
+                                    → 输出 top{{ msg.ragTrace.retrieval_top_k ?? (msg.ragTrace.retrieved_chunks || []).length }}
+                                    （{{ (msg.ragTrace.retrieved_chunks || []).length }} 条）
                                 </div>
                                 <div v-if="msg.ragTrace.leaf_retrieve_level" class="trace-line">
                                     叶子召回层级：L{{ msg.ragTrace.leaf_retrieve_level }}

@@ -5,7 +5,14 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from rag_utils import retrieve_documents, step_back_expand, generate_hypothetical_document
+from rag_utils import (
+    retrieve_documents,
+    step_back_expand,
+    generate_hypothetical_document,
+    dedupe_documents,
+    retrieval_trace_fields,
+    merge_retrieval_trace,
+)
 from tools import emit_rag_step
 
 load_dotenv()
@@ -133,19 +140,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "retrieved_chunks": results,
         "initial_retrieved_chunks": results,
         "retrieval_stage": "initial",
-        "rerank_enabled": retrieve_meta.get("rerank_enabled"),
-        "rerank_applied": retrieve_meta.get("rerank_applied"),
-        "rerank_model": retrieve_meta.get("rerank_model"),
-        "rerank_endpoint": retrieve_meta.get("rerank_endpoint"),
-        "rerank_error": retrieve_meta.get("rerank_error"),
-        "retrieval_mode": retrieve_meta.get("retrieval_mode"),
-        "candidate_k": retrieve_meta.get("candidate_k"),
-        "leaf_retrieve_level": retrieve_meta.get("leaf_retrieve_level"),
-        "auto_merge_enabled": retrieve_meta.get("auto_merge_enabled"),
-        "auto_merge_applied": retrieve_meta.get("auto_merge_applied"),
-        "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
-        "auto_merge_replaced_chunks": retrieve_meta.get("auto_merge_replaced_chunks"),
-        "auto_merge_steps": retrieve_meta.get("auto_merge_steps"),
+        **retrieval_trace_fields(retrieve_meta),
     }
     return {
         "query": query,
@@ -246,19 +241,8 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     strategy = state.get("expansion_type") or "step_back"
     emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []
-    rerank_applied_any = False
-    rerank_enabled_any = False
-    rerank_model = None
-    rerank_endpoint = None
     rerank_errors = []
-    retrieval_mode = None
-    candidate_k = None
-    leaf_retrieve_level = None
-    auto_merge_enabled = None
-    auto_merge_applied = False
-    auto_merge_threshold = None
-    auto_merge_replaced_chunks = 0
-    auto_merge_steps = 0
+    retrieval_trace: dict = {}
 
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
@@ -274,20 +258,9 @@ def retrieve_expanded(state: RAGState) -> RAGState:
                 f"合并替换 {hyde_meta.get('auto_merge_replaced_chunks', 0)}"
             ),
         )
-        rerank_applied_any = rerank_applied_any or bool(hyde_meta.get("rerank_applied"))
-        rerank_enabled_any = rerank_enabled_any or bool(hyde_meta.get("rerank_enabled"))
-        rerank_model = rerank_model or hyde_meta.get("rerank_model")
-        rerank_endpoint = rerank_endpoint or hyde_meta.get("rerank_endpoint")
         if hyde_meta.get("rerank_error"):
             rerank_errors.append(f"hyde:{hyde_meta.get('rerank_error')}")
-        retrieval_mode = retrieval_mode or hyde_meta.get("retrieval_mode")
-        candidate_k = candidate_k or hyde_meta.get("candidate_k")
-        leaf_retrieve_level = leaf_retrieve_level or hyde_meta.get("leaf_retrieve_level")
-        auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else hyde_meta.get("auto_merge_enabled")
-        auto_merge_applied = auto_merge_applied or bool(hyde_meta.get("auto_merge_applied"))
-        auto_merge_threshold = auto_merge_threshold or hyde_meta.get("auto_merge_threshold")
-        auto_merge_replaced_chunks += int(hyde_meta.get("auto_merge_replaced_chunks") or 0)
-        auto_merge_steps += int(hyde_meta.get("auto_merge_steps") or 0)
+        retrieval_trace = merge_retrieval_trace(retrieval_trace, hyde_meta)
 
     if strategy in ("step_back", "complex"):
         expanded_query = state.get("expanded_query") or state["question"]
@@ -303,29 +276,11 @@ def retrieve_expanded(state: RAGState) -> RAGState:
                 f"合并替换 {step_meta.get('auto_merge_replaced_chunks', 0)}"
             ),
         )
-        rerank_applied_any = rerank_applied_any or bool(step_meta.get("rerank_applied"))
-        rerank_enabled_any = rerank_enabled_any or bool(step_meta.get("rerank_enabled"))
-        rerank_model = rerank_model or step_meta.get("rerank_model")
-        rerank_endpoint = rerank_endpoint or step_meta.get("rerank_endpoint")
         if step_meta.get("rerank_error"):
             rerank_errors.append(f"step_back:{step_meta.get('rerank_error')}")
-        retrieval_mode = retrieval_mode or step_meta.get("retrieval_mode")
-        candidate_k = candidate_k or step_meta.get("candidate_k")
-        leaf_retrieve_level = leaf_retrieve_level or step_meta.get("leaf_retrieve_level")
-        auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else step_meta.get("auto_merge_enabled")
-        auto_merge_applied = auto_merge_applied or bool(step_meta.get("auto_merge_applied"))
-        auto_merge_threshold = auto_merge_threshold or step_meta.get("auto_merge_threshold")
-        auto_merge_replaced_chunks += int(step_meta.get("auto_merge_replaced_chunks") or 0)
-        auto_merge_steps += int(step_meta.get("auto_merge_steps") or 0)
+        retrieval_trace = merge_retrieval_trace(retrieval_trace, step_meta)
 
-    deduped = []
-    seen = set()
-    for item in results:
-        key = (item.get("filename"), item.get("page_number"), item.get("text"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
+    deduped = dedupe_documents(results)
 
     # 扩展阶段可能合并了多路召回（如 hyde + step_back），
     # 这里统一重排展示名次，避免出现 1,2,3,4,5,4,5 这类重复名次。
@@ -344,19 +299,8 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "retrieved_chunks": deduped,
         "expanded_retrieved_chunks": deduped,
         "retrieval_stage": "expanded",
-        "rerank_enabled": rerank_enabled_any,
-        "rerank_applied": rerank_applied_any,
-        "rerank_model": rerank_model,
-        "rerank_endpoint": rerank_endpoint,
-        "rerank_error": "; ".join(rerank_errors) if rerank_errors else None,
-        "retrieval_mode": retrieval_mode,
-        "candidate_k": candidate_k,
-        "leaf_retrieve_level": leaf_retrieve_level,
-        "auto_merge_enabled": auto_merge_enabled,
-        "auto_merge_applied": auto_merge_applied,
-        "auto_merge_threshold": auto_merge_threshold,
-        "auto_merge_replaced_chunks": auto_merge_replaced_chunks,
-        "auto_merge_steps": auto_merge_steps,
+        "rerank_error": "; ".join(rerank_errors) if rerank_errors else retrieval_trace.get("rerank_error"),
+        **retrieval_trace,
     })
     return {"docs": deduped, "context": context, "rag_trace": rag_trace}
 
