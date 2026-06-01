@@ -5,7 +5,7 @@ import json
 import requests
 from dotenv import load_dotenv
 
-from backend.indexing.milvus_client import MilvusManager
+from backend.indexing.milvus_client import get_milvus_store
 from backend.indexing.embedding import embedding_service as _embedding_service
 from backend.indexing.parent_chunk_store import ParentChunkStore
 from langchain.chat_models import init_chat_model
@@ -56,7 +56,7 @@ RETRIEVAL_TRACE_FIELDS = (
 )
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
-_milvus_manager = MilvusManager()
+_milvus_manager = get_milvus_store()
 _parent_chunk_store = ParentChunkStore()
 
 _stepback_model = None

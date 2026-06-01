@@ -3,11 +3,11 @@ from pathlib import Path
 
 from backend.indexing import (
     DocumentLoader,
-    MilvusManager,
     MilvusWriter,
     ParentChunkStore,
     embedding_service,
 )
+from backend.indexing.milvus_client import get_milvus_store
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR.parent / "data"
@@ -15,7 +15,7 @@ UPLOAD_DIR = DATA_DIR / "documents"
 
 loader = DocumentLoader()
 parent_chunk_store = ParentChunkStore()
-milvus_manager = MilvusManager()
+milvus_manager = get_milvus_store()
 milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager=milvus_manager)
 
 
