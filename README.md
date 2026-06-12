@@ -119,10 +119,12 @@ npm run build
   - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入 PostgreSQL。
   - 用户注册/登录、JWT 鉴权、基于角色的 RBAC 权限控制（admin/user）。
   - 会话记忆与摘要，聊天与历史记录落地 PostgreSQL，并引入 Redis 缓存热点会话与父文档。
-- **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库。
+- **运行形态**：FastAPI 后端 + 现代工程化前端（Vite + Vue 3 + TypeScript + Pinia）+ Milvus 向量库。
 
 ## 关键创新点
 - **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
+- **自适应问题分解与并行 Sub-Agent 图流程**：主图利用 LLM 分类器自动研判提问复杂度。简单问题直接检索；复杂问题通过 LLM 拆解为 2-4 个独立子问题，利用 LangGraph 的 `Send` API 并行启动子 Agent 完整流程，最终在 Synthesis 节点进行去重合成，解决多跳跨域召回痛点。
+- **纠错型 RAG（Corrective RAG）与多策略自适应重写**：检索后引入结构化评分器，判断文档与问题的相关性（Yes/No）。当评分过低或无结果时，智能重写路由在退步问题扩展（`step_back`）、假设性文档生成（`hyde`）和综合扩展（`complex`）间自适应选择，实施二次重度扩展检索。
 - **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
 - **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
 - **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
@@ -130,7 +132,7 @@ npm run build
 - **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
 - **会话摘要记忆**：自动摘要旧消息并注入系统提示，维持上下文且控制 token。
 - **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
-- **BM25 统计持久化**：`词表 + 文档频次 df + 文档数 N` 落盘到 `data/bm25_state.json`，入库时增量增加、删除/覆盖上传前按文件名从 Milvus 拉取 chunk 文本后增量扣减，与向量库同步；`embedding_service` 在 API 与检索模块间单例共享。
+- **Milvus 2.5+ 原生 BM25 混合检索**：彻底摒弃本地客户端手写 BM25 序列化和统计同步的繁琐设计。通过在 Milvus 集合 schema 中为 `text` 字段绑定 `FunctionType.BM25` 计算函数，由向量数据库在服务端原生提取稀疏特征，保证高效率的 Dense + Sparse 混合检索与完美的统计对齐。
 - **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
 - **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
 - **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
@@ -233,10 +235,21 @@ npm run build
   - `jobs/`：[upload_jobs.py](backend/jobs/upload_jobs.py)：异步上传/删除任务进度。
 - 前端：`frontend/`
   - 采用现代工程化设计（Vite + Vue 3 + TypeScript + Pinia + Axios + Sass）。
+  - **前端工程架构与状态流**：
+    - **Pinia 状态存储**：
+      - `stores/auth.ts`：处理 JWT 鉴权状态、用户注册与登录，维持 Bearer 鉴权请求。
+      - `stores/sessions.ts`：负责多会话历史的创建、异步载入、删除与切换。
+      - `stores/chat.ts`：缓存消息流，承载 RAG 各个阶段执行步骤的响应式更新。
+      - `stores/documents.ts`：实现知识库文档的展示并配合接口轮询监听上传异步任务进度。
+    - **精细化组件设计**：
+      - `ThinkingTrace.vue` & `RetrievalTraceDetails.vue`：动态渲染子/主 Agent 思考状态（Searching, Grading, Rewriting 等步骤），支持展示每路子问题的合并与召回详情。
+      - `References.vue`：折叠卡片展示知识库来源信息，含 RRF Rank、Rerank 语义得分、合并叶子块数、所处层级和页码。
+      - `UploadSection.vue` & `DocumentSettings.vue`：管理员控制面板，动态轮询监听并步进展示上传的多阶段状态机进度。
+    - **流式解包与主动终止**：
+      - `utils/api.ts`：底层采用 `fetch` API 的 `response.body.getReader()` 流式逐块（chunk）解包 SSE 数据，并配合 `AbortController` 绑定终止按钮实现前端主动切断长连接。
   - 在 `frontend/` 目录下运行 `npm run dev` 即可开始开发联调（运行于 http://localhost:3000）。
   - 在 `frontend/` 目录下运行 `npm run build` 会生成生产环境编译产物输出至 `frontend/dist/`，供 FastAPI 后端无缝进行静态托管。
 - 数据：`data/`
-  - `bm25_state.json`：BM25 词表与 `doc_freq` / `total_docs` 等统计（稀疏检索 IDF 与入库、删除同步）。
   - `documents/`：上传文档原文件。
 - 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
 
@@ -278,16 +291,16 @@ npm run build
 
 ### 3) 文档入库链路
 1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. 若同名文件已存在：先从 Milvus **分页查询**该文件全部叶子 chunk 的 `text`，对 BM25 统计执行 **increment_remove**，再删除旧向量与父块缓存，避免统计与库不一致。
+2. 若同名文件已存在：先清除旧向量与父块 PostgreSQL 数据库及 Redis 缓存，保障库内状态一致。
 3. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
-4. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
-5. L3 叶子分块在 `milvus_writer` 中先对本轮 chunk 文本执行 BM25 **increment_add**（更新 `N`、`df`、总长度并写回 `bm25_state.json`），再经 `embedding.py` 生成 Dense 与 Sparse 向量并写入 Milvus。
-6. 后续检索可直接利用新文档参与召回。
+4. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore / PostgreSQL）。
+5. L3 叶子分块通过 `milvus_writer` 注入密集向量（由本地 `embedding.py` 的 `HuggingFaceEmbeddings` 产生），并将原始文本写入配置了原生分词中文分析器的 `text` 字段。
+6. Milvus 在数据库端自动、同步触发原生 BM25 逆向抽取，动态生成并存储稀疏向量至 `sparse_embedding`，无需客户端介入统计。
+7. 后续检索可直接利用新文档参与召回。
 
-### 4) BM25 状态文件（`data/bm25_state.json`）
-- **内容**：`version`、全局 `total_docs`（chunk 篇数）、`sum_token_len`、`vocab`（词 → 稀疏维度下标）、`doc_freq`（词 → 文档频次，用于 IDF）。`vocab` 与 `doc_freq` 职责不同：前者定 Milvus 稀疏向量维度，后者定 BM25 统计。
-- **增量**：每入库一批叶子 chunk 增加统计；删除文档或覆盖上传前按文件名扣减。词表下标不回收，避免与历史稀疏向量维度冲突。
-- **注意**：`data/` 默认被 `.gitignore` 忽略，状态文件通常不落库；若 Milvus 已有数据但状态文件缺失，需清空重导或自行重建统计。
+### 4) Milvus 2.5+ 原生 BM25 处理
+- **机制**：项目利用了 Milvus 2.5+ 新版内置的全文检索机制。创建集合时，定义一个 `FunctionType.BM25` 类型的函数，输入字段为 `text` 字段，输出字段为 `sparse_embedding`。
+- **自动对齐**：当新文本 chunk 插入或删除时，Milvus 在服务端自动进行分词、统计、稀疏特征向量计算。这实现了高效率、零客户端统计负担的密集 + 稀疏混合双塔检索。
 
 ### 5) 会话记忆链路
 1. 每轮问答按当前登录用户 + `session_id` 写入 PostgreSQL。
@@ -298,7 +311,7 @@ npm run build
 ## 技术栈
 - 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn、SQLAlchemy、PostgreSQL、Redis。
 - 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
-- 嵌入与稀疏：`langchain_huggingface` 本地稠密向量（默认 `BAAI/bge-m3`）；中英混合规则分词 + BM25 手写稀疏向量，统计持久化至 `bm25_state.json`。
+- 嵌入与稀疏：`langchain_huggingface` 本地稠密向量（默认 `BAAI/bge-m3`）；Milvus 2.5+ 原生 Chinese 分析器与原生 BM25 特征提取。
 - 前端：Vite + Vue 3 (SFC) + TypeScript + Pinia + Axios + Marked + Highlight.js + FontAwesome，工程化编译与静态文件托管。
 - 工具链：dotenv 配置、requests、langchain_text_splitters、langchain_community.loaders。
 
@@ -306,7 +319,7 @@ npm run build
 需在仓库根目录或运行环境配置：
 - 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`
 - 稠密向量：`EMBEDDING_MODEL`、`EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`（需与 Milvus 集合 `dense_embedding` 维度一致）
-- BM25 持久化：`BM25_STATE_PATH`（可选，默认 `data/bm25_state.json`）
+- 密集与稀疏：由 Milvus 原生支持的内部分词与 BM25 函数自动处理，无需手动配置客户端 `BM25_STATE_PATH`
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
@@ -370,29 +383,29 @@ def emit_rag_step(icon, label):
 ```
 
 ### 2. 混合检索（Hybrid Search）深度实现
-项目并非简单调用 Milvus 接口，而是手动构建了稀疏-稠密双塔检索：
+项目并非在客户端手写复杂的 BM25 特征序列化，而是利用 Milvus 2.5+ 服务端原生分析器构建了极致的双塔检索：
 
 - **Dense Pathway**：使用 `langchain_huggingface.HuggingFaceEmbeddings`（默认 `BAAI/bge-m3`）生成稠密向量，维度由 `DENSE_EMBEDDING_DIM` 与集合 schema 对齐（默认 1024），向量可做 L2 归一化后与 Milvus `IP` 度量配合。
 - **Sparse Pathway**：
-    - 在 `embedding.py` 中基于中英混合规则分词（单字中文 + 英文单词）实现 BM25，生成 `{稀疏维度下标: BM25 分数}`，写入 Milvus `SPARSE_FLOAT_VECTOR`。
-    - 全局 `N` / `doc_freq` / 平均文档长等统计持久化在 `bm25_state.json`，入库与删除走增量更新；检索与写入共用同一 `embedding_service` 单例。
+    - 文档写入时，仅需将原始文本写入启用 `chinese` 分析器分词的 `text` 字段。
+    - Milvus 服务端自动运行绑定的 `FunctionType.BM25` 计算函数，动态生成对应的稀疏嵌入并同步到 `sparse_embedding` 索引中，完美对齐词表统计。
 - **Milvus 融合**：
-    - 使用 Milvus 的 `AnnSearchRequest` 同时发起两个请求。
+    - 使用 Milvus 的 `AnnSearchRequest` 同时发起稠密和稀疏的两个多路检索请求。
     - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
 
 ### 3. 前端 "Thinking State Machine"
-前端 `script.js` 维护了一个微型状态机来处理通过 SSE 传回的复杂混合流：
+前端 `stores/chat.ts` 结合响应式组件 `ThinkingTrace.vue` 维护了一个微型状态机来处理通过 SSE 传回的复杂混合流：
 
 1.  **Idle**: 等待用户输入。
-2.  **Thinking (Initial)**: 收到请求，创建消息气泡，`isThinking=true`，显示默认动画。
-3.  **Thinking (Active RAG)**: 收到 `type: rag_step` 事件。
+2.  **Thinking (Initial)**: 收到请求，创建消息气泡并置其 `isThinking=true`。
+3.  **Thinking (Active RAG)**: 收到 `type: "rag_step"` 事件。
     - 状态机保持 `isThinking=true`。
-    - 动态更新 Header 文字（如 "正在重写查询..."）。
-    - 向 `ragSteps` 数组追加步骤，触发 Vue 列表渲染。
-4.  **Streaming**: 收到第一个 `type: content` 事件。
-    - **立即切换**: 设置 `isThinking=false`。
-    - 并不销毁气泡，而是隐藏思考 header，开始在同一气泡内追加 Markdown 文本。
-    - 这样实现了从"思考"到"回答"的无缝视觉过渡，没有突兀的 UI 抖动。
+    - 动态更新当前 RAG 步进文字与状态细节卡片（例如显示 "正在重写查询..."、"Auto-merging 合并完成" 等）。
+    - 往消息项的 `ragSteps` 数组追加步骤，实时推送到组件渲染。
+4.  **Streaming**: 收到首个 `type: "content"` 事件。
+    - **立即切换**: 标记并设置 `isThinking=false`。
+    - 并不销毁或重建气泡，而是隐藏思考详情头部，开始在同一个气泡内流式追加 Markdown 正文文本。
+    - 这样实现了从 "动态检索步骤思考" 到 "大模型流式回答" 的无缝视觉过渡，视觉上极为顺滑。
 
 ## 整体架构
 
@@ -458,7 +471,7 @@ StreamingResponse(
 
 ### 前端实现
 
-#### 1) ReadableStream 解析 (`script.js`)
+#### 1) ReadableStream 解析 (`utils/api.ts`)
 - 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
 - 手动按 `\n\n` 分割 SSE 事件，解析 `data: ` 前缀后的 JSON。
 - `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
@@ -489,6 +502,32 @@ StreamingResponse(
 
 ## 更新日志
 
+### 2026-06-12 全面迁移至 Milvus 2.5+ 原生 BM25 与事务级可靠删除
+- **服务端原生 BM25**：重构并迁移至 Milvus 2.5+ 内置中文分词器与 BM25 Pipeline 函数。完全移除客户端的手写分词、稀疏特征向量计算及 `bm25_state.json` 状态文件，极大降低客户端负担。
+- **Schema 自动升级**：优化 `ensure_collection` 逻辑，支持自动检测旧版 Schema 并进行 drop 与无缝重建升级。
+- **事务性一键删除**：实现高可靠、强一致性的 `delete_document_transactionally` 删除协调器，一键清理 Milvus 向量数据、PostgreSQL 级联分块记录和 Redis 热缓存，避免产生任何悬空脏数据。
+- **企业级文本净化**：升级文本清洗逻辑，通过 Unicode NFC 标准规范化和 PUA/C0/C1 等非打印/零宽/孤立代理项的彻底过滤，解决 PostgreSQL 与 Milvus 的字符集兼容性报错。
+
+### 2026-06-12 前端单文件 CDN 重构为 Vite + Vue 3 + TS 工程化组件架构
+- **现代化架构重构**：将以前臃肿的多合一 HTML/CDN 页面重构为标准的 **Vite + Vue 3 (SFC) + TypeScript + Pinia + Axios + Sass** 现代化工程项目，全部组件和状态高度解耦。
+- **状态及路由管理**：利用 Pinia 建立了 `auth`、`sessions`、`chat`、`documents` 四大 Store 共享核心数据。
+- **高阶交互界面**：增加流式上传进度详情卡片、上传成功后卡片自动折叠、References 参考文献精美折叠展示、Thinking 气泡流畅过度等。
+
+### 2026-06-03 自适应复杂问题分解、并行 Sub-Agent 与精排门控
+- **提问复杂度分类**：内置 LLM 分类路由，简单问题直发检索，复杂问题通过 LLM 拆解为 2-4 个高覆盖、互不重叠的独立子问题。
+- **并行子 Agent 推理**：利用 LangGraph 的 `Send` API 并行发起到独立的子图流程（`rag_sub_agent`），使每个子问题分别执行完整的 retrieve、grade、rewrite 判定。
+- **子步骤完美分组**：前端界面重新适配并行子流程，在 RAG Step 的 SSE 数据中为子问题建立独立分组标签展示，避免交错重复建组与视觉混淆。
+- **精排阈值与 Step-back 强制路由**：加入 `RERANK_MIN_SCORE` 准入门槛过滤噪音。当精排过滤后结果为空时，强制执行 step-back 扩展重写，保证长尾问题的基本召回兜底。
+
+### 2026-06-02 通用 RAG 能力强化与后端生命周期重构
+- **通用 RAG 功能增强**：新增思考模式切换、会话摘要长期记忆（Context Manager Notes）、智能会话标题自主生成，以及多源参考文献的可视化折叠展示卡片。
+- **gRPC 连接生命周期优化**：Milvus 数据库客户端访问由全局连接池改为短生命周期会话（`session()` contextmanager），按请求建立短连接会话，彻底规避连接因长期挂起产生的失效 gRPC channel 问题。
+- **后端分层重组与包依赖解耦**：彻底重构 backend 代码目录包结构，剔除 re-export 导出机制，解决因交叉导入产生的循环依赖，并统一环境加载规范。
+
+### 2026-06-01 召回-合并-精排（Rerank）流水线重构
+- **模块化 Pipeline**：重构 RAG 底层实现，将 RAG 流程收拢为高可控的“召回 -> 自动合并 -> 语义重排”流水线，收口统一的参数配置与多级 RAG Trace 追踪。
+- **去重合并高分保留**：修复了在执行 L3 -> L2/L1 叶子向上合并时，在循环内聚合 Rank 分数的算法，防止去重过程中丢失高置信度召回分。
+
 ### 2026-04-08 本地嵌入与 BM25 持久化
 - **稠密向量**：由兼容 API 改为 `langchain_huggingface` 本地模型（默认 `BAAI/bge-m3`），支持 `EMBEDDING_MODEL` / `EMBEDDING_DEVICE`；Milvus `dense_embedding` 维度与 `DENSE_EMBEDDING_DIM` 对齐（默认 1024）。
 - **BM25 统计**：`词表 vocab + 文档频次 doc_freq + 文档数 N` 持久化至 `data/bm25_state.json`（可选 `BM25_STATE_PATH`）；每个叶子 chunk 视为一篇文档，入库时 **increment_add**，删除文档或覆盖上传前按文件名从 Milvus 拉取 chunk 文本后 **increment_remove**；`embedding_service` 在 `api` 与 `rag_utils` 间单例共享，避免写入与检索状态分裂。
@@ -516,7 +555,7 @@ StreamingResponse(
 - **修复**：
   1. **Backend (`tools.py`)**：在 `set_rag_step_queue` 中显式捕获主线程的 `loop`。
   2. **Backend (`tools.py`)**：更新 `emit_rag_step` 使用捕获的 `_RAG_STEP_LOOP.call_soon_threadsafe` 跨线程调度事件。
-  3. **Frontend (`script.js`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
+  3. **Frontend (`stores/chat.ts`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
 - **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。
 
 
