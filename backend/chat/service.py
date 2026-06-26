@@ -8,6 +8,10 @@ from backend.chat.storage import ConversationStorage
 from backend.chat.rag_context import get_last_rag_context
 from backend.chat.streaming import set_rag_step_queue
 from backend.tools import reset_knowledge_tool_calls
+from concurrent.futures import ThreadPoolExecutor
+
+# 全局只创建一次线程池，避免每次调用都新建线程
+_executor = ThreadPoolExecutor(max_workers=2)
 
 storage = ConversationStorage()
 
@@ -127,21 +131,42 @@ def chat_with_agent(
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
 
-    save_meta = dict(metadata)
-    if is_first_message:
-        save_meta["title"] = _generate_session_title_sync(user_text)
-    save_meta["persistent_note"] = _update_persistent_note_sync(
-        persistent_note, user_text, response_content
-    )
+    # save_meta = dict(metadata)
+    # if is_first_message:
+    #     save_meta["title"] = _generate_session_title_sync(user_text)
+    # save_meta["persistent_note"] = _update_persistent_note_sync(
+    #     persistent_note, user_text, response_content
+    # )
 
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(
-        user_id,
-        session_id,
-        messages,
-        metadata=save_meta,
-        extra_message_data=extra_message_data,
-    )
+    # extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+    # storage.save(
+    #     user_id,
+    #     session_id,
+    #     messages,
+    #     metadata=save_meta,
+    #     extra_message_data=extra_message_data,
+    # )
+    #  ========== 关键改动：把所有后置任务扔到后台，先返回结果 ==========
+    def _post_process():
+        """后台执行：生成标题、更新笔记、保存历史，不阻塞返回"""
+        try:
+            save_meta = dict(metadata)
+            if is_first_message:
+                save_meta["title"] = _generate_session_title_sync(user_text)
+            save_meta["persistent_note"] = _update_persistent_note_sync(
+                persistent_note, user_text, response_content
+            )
+            extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+            storage.save(
+                user_id, session_id, messages,
+                metadata=save_meta,
+                extra_message_data=extra_message_data,
+            )
+        except Exception as e:
+            print(f"[后台任务异常] {e}")
+
+    # 提交到线程池后台执行，不阻塞当前函数返回
+    _executor.submit(_post_process)
 
     return {
         "response": response_content,
@@ -249,26 +274,66 @@ async def chat_with_agent_stream(
 
     yield "data: [DONE]\n\n"
 
-    save_meta = dict(metadata)
-    if is_first_message and title_task is not None:
+    # save_meta = dict(metadata)
+    # if is_first_message and title_task is not None:
+    #     try:
+    #         save_meta["title"] = await title_task
+    #     except Exception:
+    #         pass
+
+    # try:
+    #     save_meta["persistent_note"] = await update_persistent_note(
+    #         persistent_note, user_text, full_response
+    #     )
+    # except Exception as e:
+    #     print(f"Update persistent note error: {e}")
+
+    # messages.append(AIMessage(content=full_response))
+    # extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+    # storage.save(
+    #     user_id,
+    #     session_id,
+    #     messages,
+    #     metadata=save_meta,
+    #     extra_message_data=extra_message_data,
+    # )
+
+    # ========== 原来的同步等待逻辑，全部放到后台任务 ==========
+        # 提交后台执行，不阻塞当前生成器结束，连接立刻释放
+    async def _post_save():
         try:
-            save_meta["title"] = await title_task
-        except Exception:
-            pass
+            save_meta = dict(metadata)
+            if is_first_message and title_task is not None:
+                try:
+                    save_meta["title"] = await title_task
+                except Exception:
+                    pass
 
-    try:
-        save_meta["persistent_note"] = await update_persistent_note(
-            persistent_note, user_text, full_response
-        )
-    except Exception as e:
-        print(f"Update persistent note error: {e}")
+            try:
+                save_meta["persistent_note"] = await update_persistent_note(
+                    persistent_note, user_text, full_response
+                )
+            except Exception as e:
+                print(f"Update persistent note error: {e}")
 
-    messages.append(AIMessage(content=full_response))
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(
-        user_id,
-        session_id,
-        messages,
-        metadata=save_meta,
-        extra_message_data=extra_message_data,
-    )
+            messages.append(AIMessage(content=full_response))
+            extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+            
+            # 同步IO放到线程池执行，不阻塞事件循环
+            await asyncio.to_thread(
+                storage.save,
+                user_id,
+                session_id,
+                messages,
+                metadata=save_meta,
+                extra_message_data=extra_message_data,
+            )
+        except Exception as e:
+            print(f"[后台保存任务异常] session_id={session_id}, error={e}")
+
+    task = asyncio.create_task(_post_save())
+    # 兜底：后台任务异常时打印日志，避免静默失败
+    def _on_task_done(fut):
+        if fut.exception():
+            print(f"[后台任务异常退出] {fut.exception()}")
+    task.add_done_callback(_on_task_done)

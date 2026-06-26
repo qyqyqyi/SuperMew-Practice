@@ -43,7 +43,7 @@ def _extract_reference(reference_outputs: Optional[dict]) -> str:
     return ""
 
 # 1. Select your dataset
-dataset_name = "RAG"
+dataset_name = "supermew-rag-eval"
 
 # 2. Define an evaluator (评估最终答案，不评估检索块)
 def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
@@ -76,7 +76,8 @@ def target_function(inputs: dict) -> dict:
         user_id="langsmith_eval_user",
         session_id=session_id,
     )
-
+    # 新增打印，查看原始返回
+    # print(f"原始chat_with_agent返回结果：{result}")
     response_text = ""
     rag_trace = {}
     if isinstance(result, dict):
@@ -84,7 +85,7 @@ def target_function(inputs: dict) -> dict:
         rag_trace = result.get("rag_trace", {}) or {}
     else:
         response_text = str(result)
-
+    print(f"最终输出response文本：{response_text}") # 看这里是否为空
     return {
         "response": response_text,
         "rag_trace": rag_trace,
@@ -96,5 +97,5 @@ evaluate(
     target_function,
     data=dataset_name,
     evaluators=[custom_evaluator],
-    experiment_prefix="RAG Pipeline Real Evaluation"
+    experiment_prefix="supermew-rag-eval experiment"
 )
