@@ -57,7 +57,6 @@
 | [MinIO unhealthy 问题排查手册](./docs/troubleshooting-minio-unhealthy.md) | MinIO 健康检查异常的完整排查流程、根因分析与解决方案 |
 | [LangSmith RAG 评估全流程指南](./docs/langsmith-rag-evaluation-guide.md)  | 评估体系搭建、问题排查、异步优化方案与生产级优化方向 |
 | [原始项目官方文档](./ORIGINAL_README.md)                                  | 原 SuperMew 项目的完整官方说明文档                   |
-| [开源协议](./LICENSE)                                                     | 项目沿用的开源许可证                                 |
 
 ## 项目目录结构
 
@@ -77,6 +76,6 @@ SuperMew/
 └── README.md               # 项目说明
 ```
 
-## 开源协议
 
-本项目基于原 SuperMew 项目进行二次开发实践，沿用原项目的开源协议，完整协议内容见 [LICENSE](./LICENSE)。所有原始版权归原作者所有，本仓库仅用于学习与实践。
+
+本仓库仅为个人学习实践使用，项目原始代码版权全部归原作者 icey1287 所有，禁止商用、未经许可分发。
